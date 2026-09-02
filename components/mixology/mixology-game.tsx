@@ -17,7 +17,9 @@ import { MixProseView } from "./prose-view";
 import { MixRichText } from "./rich-text";
 import { KindGlyph, MixConfirm } from "./mixology-shared";
 import { MixTicketFrame } from "./ticket-frame";
-import { MixMechanismInline, MixMechanismPanel } from "./mechanism-panel";
+import { MixMechanismInline, MixMechanismPanel, sendMixDialogue } from "./mechanism-panel";
+import { primeMixAudio } from "@/lib/mixology/audio-player";
+import type { MixProseDialogue } from "./prose-view";
 import { MixSlotEditor } from "./slot-editor";
 import { MixMaterialEditor } from "./mixology-editor";
 import { disposeMixSandboxesForMaterial } from "@/lib/mixology/mechanism-runtime";
@@ -34,7 +36,7 @@ type GameProps = {
 /** 一轮里要渲染的一块（状态栏/小剧场）：皮 + 这一轮的原文 */
 type TurnFrame = { key: string; html: string; raw: string };
 
-function AssistantTurn({ turn, ticketFrames, encoreFrames, filterRules, state }: { turn: MixTurn; ticketFrames: TurnFrame[]; encoreFrames: TurnFrame[]; filterRules?: MixFilterRule[]; state?: MixState }) {
+function AssistantTurn({ turn, ticketFrames, encoreFrames, filterRules, state, dialogue }: { turn: MixTurn; ticketFrames: TurnFrame[]; encoreFrames: TurnFrame[]; filterRules?: MixFilterRule[]; state?: MixState; dialogue?: MixProseDialogue }) {
     // 展示顺序：状态栏在正文前、小剧场在正文后（与模型的输出顺序一致，无需重排）；
     // 一轮多块时依次上下排开，各块各自的皮各渲染各的
     // 滤网「仅显示」模式在这里生效：存储不动，渲染前替换，历史消息也即时生效
@@ -46,7 +48,7 @@ function AssistantTurn({ turn, ticketFrames, encoreFrames, filterRules, state }:
                     <MixTicketFrame html={frame.html} raw={frame.raw} state={state} />
                 </div>
             ))}
-            {shownText ? <MixProseView text={shownText} /> : null}
+            {shownText ? <MixProseView text={shownText} dialogue={dialogue} /> : null}
             {encoreFrames.map((frame) => (
                 <div className="mix-encore-turn" key={frame.key}>
                     <MixTicketFrame html={frame.html} raw={frame.raw} state={state} />
@@ -320,6 +322,7 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
             "inputbar-right": [] as typeof panels,
             "flow-top": [] as typeof panels,
             "flow-bottom": [] as typeof panels,
+            hidden: [] as typeof panels,
         };
         for (const item of panels) groups[mixPanelSlotOf(item.layout)].push(item);
         return groups;
@@ -350,6 +353,49 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
         saveMixSession({ ...current, panelOpen: next });
         setSession(getMixSession(sessionId));
     }, [sessionId]);
+
+    /**
+     * 对白按钮：声明了 dialogueButton 的机括，宿主替它在每句「对白」后画一颗图标。
+     * 点击把这句话递进它的界面（sendMixDialogue），界面用 mix.mark 回报状态改图标。
+     * 按钮位（header/inputbar-*）的面板关着时收不到，先替玩家打开再递。
+     */
+    const dialogueActions = useMemo(
+        () => panels
+            .filter(({ material }) => material.dialogueButton?.icon)
+            .map(({ material }) => ({ key: material.id, icon: material.dialogueButton!.icon, title: material.dialogueButton!.title || material.name })),
+        [panels],
+    );
+    const [dialogueStates, setDialogueStates] = useState<Record<string, string>>({});
+    const handlePanelMark = useCallback((materialId: string, id: string, state: string) => {
+        setDialogueStates((prev) => {
+            const key = `${materialId}|${id}`;
+            if ((prev[key] || "") === state) return prev;
+            const next = { ...prev };
+            if (state) next[key] = state;
+            else delete next[key];
+            return next;
+        });
+    }, []);
+    const handleDialogueTap = useCallback((materialId: string, segmentId: string, text: string, turnId: string) => {
+        const item = panels.find(({ material }) => material.id === materialId);
+        if (!item) return;
+        // 这次点击是宿主拿到的唯一手势：趁现在把播放元素解锁，机括稍后 mix.play 才放得出声（iOS）
+        primeMixAudio();
+        const slot = mixPanelSlotOf(item.layout);
+        if ((slot === "header" || slot === "inputbar-left" || slot === "inputbar-right") && !(getMixSession(sessionId)?.panelOpen?.[materialId])) {
+            toggleDock(materialId);
+        }
+        sendMixDialogue(materialId, { id: segmentId, text, turnId });
+    }, [panels, sessionId, toggleDock]);
+    const dialogueFor = useCallback((turnId: string): MixProseDialogue | undefined => {
+        if (!dialogueActions.length) return undefined;
+        return {
+            actions: dialogueActions,
+            states: dialogueStates,
+            idPrefix: `${turnId}:`,
+            onTap: (key, segmentId, text) => handleDialogueTap(key, segmentId, text, turnId),
+        };
+    }, [dialogueActions, dialogueStates, handleDialogueTap]);
 
     /**
      * 机括界面的逃生口。摆放完全交给创作者之后，理论上存在"一块面板糊满整个屏幕、
@@ -935,6 +981,8 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                             onState={handlePanelState}
                             onSay={handlePanelSay}
                             connectors={material.connectors}
+                            onMark={handlePanelMark}
+                            onToast={onToast}
                         />
                     ))}
                 </div>
@@ -967,6 +1015,8 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                             onState={handlePanelState}
                             onSay={handlePanelSay}
                             connectors={material.connectors}
+                            onMark={handlePanelMark}
+                            onToast={onToast}
                         />
                     </div>
                 ))}
@@ -990,7 +1040,7 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                         </div>
                     ) : (
                         <div className="mix-assistant-turn" key={turn.id}>
-                            <AssistantTurn turn={turn} ticketFrames={turnTicketFrames(turn)} encoreFrames={turnEncoreFrames(turn)} filterRules={assets.filterRules} state={turn.state} />
+                            <AssistantTurn turn={turn} ticketFrames={turnTicketFrames(turn)} encoreFrames={turnEncoreFrames(turn)} filterRules={assets.filterRules} state={turn.state} dialogue={dialogueFor(turn.id)} />
                             {actions}
                         </div>
                     );
@@ -1021,6 +1071,8 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                             onState={handlePanelState}
                             onSay={handlePanelSay}
                             connectors={material.connectors}
+                            onMark={handlePanelMark}
+                            onToast={onToast}
                         />
                     </div>
                 ))}
@@ -1030,6 +1082,27 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                     </div>
                 ))}
             </div>
+            {/* 无界面的机括：沙盒照常挂着、照常收对白事件，只是什么都不画 */}
+            {slotGroups.hidden.length ? (
+                <div hidden aria-hidden="true">
+                    {slotGroups.hidden.map(({ material }) => (
+                        <MixMechanismInline
+                            key={material.id}
+                            materialId={material.id}
+                            name={material.name}
+                            html={material.panelHtml ?? ""}
+                            state={session.state ?? {}}
+                            store={session.mechanismStore?.[material.id] ?? {}}
+                            onStore={handlePanelStore}
+                            onState={handlePanelState}
+                            onSay={handlePanelSay}
+                            connectors={material.connectors}
+                            onMark={handlePanelMark}
+                            onToast={onToast}
+                        />
+                    ))}
+                </div>
+            ) : null}
             {slotGroups.float.length && !panelsHidden ? (
                 <div className="mix-panel-layer">
                     {slotGroups.float.map(({ material, layout }) => (
@@ -1045,6 +1118,8 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                             onState={handlePanelState}
                             onSay={handlePanelSay}
                             connectors={material.connectors}
+                            onMark={handlePanelMark}
+                            onToast={onToast}
                             onBox={handlePanelBox}
                         />
                     ))}
@@ -1065,6 +1140,8 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                             onState={handlePanelState}
                             onSay={handlePanelSay}
                             connectors={material.connectors}
+                            onMark={handlePanelMark}
+                            onToast={onToast}
                         />
                     ))}
                 </div>
