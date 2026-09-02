@@ -23,8 +23,8 @@ const MASCOT_DB_VERSION = 2;
 const MASCOT_CHAT_STORE = "chat";
 const MASCOT_MESSAGES_KEY = "messages"; // 旧版单会话键，仅用于迁移
 const MASCOT_STATE_KEY = "state";
-const MAX_STORED_MASCOT_MESSAGES = 50;
-const MAX_MASCOT_SESSIONS = 30;
+const MAX_STORED_MASCOT_MESSAGES = 1000;
+const MAX_MASCOT_SESSIONS = 100;
 
 export type MascotSession = {
     id: string;
