@@ -56,8 +56,8 @@ type ContextMenuAnchor = {
     y: number;
 };
 
-const MASCOT_INITIAL_VISIBLE_MESSAGE_COUNT = 20;
-const MASCOT_LOAD_MORE_MESSAGE_COUNT = 20;
+const MASCOT_INITIAL_VISIBLE_MESSAGE_COUNT = 100;
+const MASCOT_LOAD_MORE_MESSAGE_COUNT = 100;
 const IMAGE_FILE_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp|avif|heic|heif)$/i;
 
 function isLikelyImageFile(file: File): boolean {
