@@ -3486,7 +3486,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                 // Background transcription
                 (async () => {
                     try {
-                        const config = resolveCloudSttConfig(characterId);
+                        const config = resolveCloudSttConfig(session.contactId);
                         if (!config) throw new Error("未找到语音识别配置");
                         
                         // Convert base64 DataURL back to Blob
