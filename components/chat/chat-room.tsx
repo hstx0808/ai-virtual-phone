@@ -836,19 +836,10 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
             {!isSpectator && !inputLocked && isCallRecordingSupported() && resolveCloudSttConfig(characterId) && (
                 <button
                     type="button"
-                    {...(isRecording ? {
-                        onPointerDown: async (e) => {
-                            e.preventDefault();
-                            try {
-                                const recording = await startCallRecording();
-                                recordingRef.current = recording;
-                                setIsRecording(true);
-                                setRecordingError("");
-                            } catch (err) {
-                                setRecordingError(err instanceof Error ? err.message : "无法启动录音");
-                            }
-                        },
-                        onPointerUp: async () => {
+                    onClick={async () => {
+                        if (isGenerating) return;
+                        if (isRecording) {
+                            // 停止录音
                             if (!recordingRef.current) return;
                             const recording = recordingRef.current;
                             recordingRef.current = null;
@@ -865,17 +856,8 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
                             } catch (err) {
                                 setRecordingError(err instanceof Error ? err.message : "语音识别失败");
                             }
-                        },
-                        onPointerCancel: () => {
-                            if (recordingRef.current) {
-                                recordingRef.current.cancel();
-                                recordingRef.current = null;
-                                setIsRecording(false);
-                            }
-                        },
-                    } : {
-                        onClick: async () => {
-                            if (isGenerating) return;
+                        } else {
+                            // 开始录音
                             try {
                                 const recording = await startCallRecording();
                                 recordingRef.current = recording;
@@ -884,29 +866,11 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
                             } catch (err) {
                                 setRecordingError(err instanceof Error ? err.message : "无法启动录音");
                             }
-                        },
-                        onPointerUp: async () => {
-                            if (!recordingRef.current) return;
-                            const recording = recordingRef.current;
-                            recordingRef.current = null;
-                            setIsRecording(false);
-                            try {
-                                const blob = await recording.stop();
-                                if (!blob) return;
-                                const config = resolveCloudSttConfig(characterId);
-                                if (!config) return;
-                                const text = await transcribeAudioBlob(blob, config);
-                                if (text.trim()) {
-                                    appendText(text.trim());
-                                }
-                            } catch (err) {
-                                setRecordingError(err instanceof Error ? err.message : "语音识别失败");
-                            }
-                        },
-                    })}
+                        }
+                    }}
                     className={`ui-bare-btn text-[var(--c-text)] ${isRecording ? 'text-red-500' : ''}`}
-                    aria-label={isRecording ? "停止录音" : "按住说话"}
-                    title={isRecording ? "停止录音" : "按住说话"}
+                    aria-label={isRecording ? "停止录音" : "点击说话"}
+                    title={isRecording ? "停止录音" : "点击说话"}
                     style={inputLocked ? { opacity: 0.35 } : undefined}
                 >
                     {isRecording ? (
