@@ -523,15 +523,7 @@ export function editAndResendQaMessage(
     if (!session || activeSessionId !== sessionId) return { ok: false, reason: "当前会话已经切换，请重新操作。" };
     const messageIndex = session.messages.findIndex((message) => message.id === msgId);
     if (messageIndex < 0) return { ok: false, reason: "消息已不存在。" };
-    const removedTurns = resendTurnIds(session, messageIndex);
-    const prefixContext = session.context?.filter((entry) => !entry.turn || !removedTurns.has(entry.turn));
 
-    updateSession(sessionId, (current) => ({
-        ...current,
-        messages: current.messages.slice(0, messageIndex),
-        context: prefixContext,
-        updatedAt: Date.now(),
-    }));
     // 扫描被截断的消息中已 applied 的 GitHub Commit，并自动尝试回退
     const discardedMessages = session.messages.slice(messageIndex);
     for (const msg of discardedMessages) {
