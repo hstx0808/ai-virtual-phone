@@ -542,6 +542,7 @@ function QaSessionDrawer({
                   onClick={(e) => {
                     e.stopPropagation();
                     onCarryOver(session.id);
+                    setMenuOpenId(null);
                   }}
                 >
                   {isCarrying ? <Loader2 size={14} className="qa-spin" /> : <Square size={14} />}
