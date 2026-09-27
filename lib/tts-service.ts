@@ -179,32 +179,37 @@ async function synthesizeOpenAI(text: string, config: VoiceApiConfig): Promise<B
 }
 
 // ── Fish Audio TTS ──────────────────────────────────
+// 走服务端代理，避免浏览器直接请求 Fish Audio API 时的 CORS 拦截问题。
 
 async function synthesizeFish(text: string, config: VoiceApiConfig): Promise<Blob | null> {
     if (!config.apiKey) throw new Error("Fish Audio API Key 未配置");
 
     const baseUrl = (config.baseUrl || "https://api.fish.audio/v1").replace(/\/$/, "");
-    const response = await fetchWithTimeout(`${baseUrl}/tts`, {
+    
+    // 通过 Next.js 服务端代理转发，避免 CORS 问题
+    const response = await fetch("/api/voice/fish-audio", {
         method: "POST",
         headers: {
-            Authorization: `Bearer ${config.apiKey}`,
             "Content-Type": "application/json",
-            "model": config.model || "s2.1-pro-free",
         },
         body: JSON.stringify({
+            apiKey: config.apiKey,
+            baseUrl,
             text,
-            reference_id: config.defaultVoice || undefined,
+            model: config.model || "s2.1-pro-free",
+            reference_id: config.defaultVoice || "",
             format: "mp3",
         }),
     });
 
     if (!response.ok) {
-        const errText = await response.text().catch(() => "");
-        throw new Error(`Fish Audio TTS 请求失败 (${response.status}): ${errText}`);
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.message || `Fish Audio TTS 请求失败 (${response.status})`);
     }
 
+    const contentType = response.headers.get("content-type") || "audio/mpeg";
     const blob = await response.blob();
-    return new Blob([await blob.arrayBuffer()], { type: "audio/mpeg" });
+    return new Blob([await blob.arrayBuffer()], { type: contentType });
 }
 
 // ── iOS audio playback that coexists with speech recognition ──────────
