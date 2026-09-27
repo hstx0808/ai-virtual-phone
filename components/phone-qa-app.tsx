@@ -919,6 +919,10 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
     () => snapshot.sessions.find((s) => s.id === snapshot.activeSessionId) ?? null,
     [snapshot.sessions, snapshot.activeSessionId],
   );
+
+  const messages = useMemo(() => activeSession?.messages ?? [], [activeSession]);
+  const createdContent = useMemo(() => activeSession?.createdContent ?? [], [activeSession]);
+
   // ── 工坊开放插件宿主接口与生命周期广播 ──
   useEffect(() => {
     const runtime = {
@@ -970,8 +974,6 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
     }
   }, [snapshot.activeSessionId, snapshot.isGenerating, snapshot.isCompacting, onNotice]);
 
-  const messages = useMemo(() => activeSession?.messages ?? [], [activeSession]);
-  const createdContent = useMemo(() => activeSession?.createdContent ?? [], [activeSession]);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItem, setPreviewItem] = useState<QaCreatedContent | null>(null);
   const previewApp = useMemo(
