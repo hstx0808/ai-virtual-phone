@@ -326,7 +326,7 @@ export function SystemInstructionModal({ onSend, onClose }: SystemInstructionMod
 
 interface VoiceRecordModalProps {
     characterId: string;
-    onSend: (text: string, audioDataUrl?: string) => void;
+    onSend: (text: string, audioDataUrl?: string, isTranscribing?: boolean) => void;
     onClose: () => void;
 }
 
@@ -491,7 +491,7 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
         }
     };
 
-    const canSend = inputMode === "text" ? !!manualText.trim() : state === "done" && !!finalText.trim();
+    const canSend = inputMode === "text" ? !!manualText.trim() : (state === "done" && !!finalText.trim()) || !!audioDataUrl || state === "processing";
 
     return (
         <div className="modal-overlay" onClick={onClose}>
@@ -552,8 +552,32 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
                     <button
                         onClick={() => {
                             if (!canSend) return;
-                            if (inputMode === "text") onSend(manualText.trim());
-                            else onSend(finalText.trim(), audioDataUrl || undefined);
+                            if (inputMode === "text") {
+                                onSend(manualText.trim());
+                            } else {
+                                if (state === "done" && finalText.trim()) {
+                                    onSend(finalText.trim(), audioDataUrl || undefined);
+                                } else {
+                                    // Background transcription mode
+                                    if (audioDataUrl) {
+                                        onSend("", audioDataUrl, true);
+                                    } else {
+                                        let tries = 0;
+                                        const checkAndSend = () => {
+                                            const currentUrl = (document.querySelector('.modal-dialog') as any)?.__reactFiber$?.memoizedState?.memoizedState?.audioDataUrl || audioDataUrl;
+                                            if (currentUrl) {
+                                                onSend("", currentUrl, true);
+                                            } else if (tries < 40) {
+                                                tries++;
+                                                setTimeout(checkAndSend, 50);
+                                            } else {
+                                                onSend("", "", true);
+                                            }
+                                        };
+                                        checkAndSend();
+                                    }
+                                }
+                            }
                         }}
                         disabled={!canSend}
                         className="ui-btn ui-btn-success flex-1"

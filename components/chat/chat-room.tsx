@@ -832,56 +832,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
                     : (theaterMode ? "写下番外指令..." : undefined)}
             />
 
-            {/* 语音输入按钮 */}
-            {!isSpectator && !inputLocked && isCallRecordingSupported() && resolveCloudSttConfig(characterId) && (
-                <button
-                    type="button"
-                    onClick={async () => {
-                        if (isGenerating) return;
-                        if (isRecording) {
-                            // 停止录音
-                            if (!recordingRef.current) return;
-                            const recording = recordingRef.current;
-                            recordingRef.current = null;
-                            setIsRecording(false);
-                            try {
-                                const blob = await recording.stop();
-                                if (!blob) return;
-                                const config = resolveCloudSttConfig(characterId);
-                                if (!config) return;
-                                const text = await transcribeAudioBlob(blob, config);
-                                if (text.trim()) {
-                                    appendText(text.trim());
-                                }
-                            } catch (err) {
-                                setRecordingError(err instanceof Error ? err.message : "语音识别失败");
-                            }
-                        } else {
-                            // 开始录音
-                            try {
-                                const recording = await startCallRecording();
-                                recordingRef.current = recording;
-                                setIsRecording(true);
-                                setRecordingError("");
-                            } catch (err) {
-                                setRecordingError(err instanceof Error ? err.message : "无法启动录音");
-                            }
-                        }
-                    }}
-                    className={`ui-bare-btn text-[var(--c-text)] ${isRecording ? 'text-red-500' : ''}`}
-                    aria-label={isRecording ? "停止录音" : "点击说话"}
-                    title={isRecording ? "停止录音" : "点击说话"}
-                    style={inputLocked ? { opacity: 0.35 } : undefined}
-                >
-                    {isRecording ? (
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                            <rect x="9" y="9" width="6" height="6" rx="1" />
-                        </svg>
-                    ) : (
-                        <Mic size={24} strokeWidth={1.5} />
-                    )}
-                </button>
-            )}
+
 
             <div className="chat-input-actions">
                 <button
@@ -3527,6 +3478,53 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
             ...(mediaUrl ? { mediaUrl } : {}),
         });
         setMessages(prev => [...prev, newMsg]);
+
+        if (mediaType === "audio" && mediaData && (mediaData as any).isTranscribing) {
+            const msgId = newMsg.id;
+            const audioDataUrl = mediaUrl;
+            if (audioDataUrl) {
+                // Background transcription
+                (async () => {
+                    try {
+                        const config = resolveCloudSttConfig(characterId);
+                        if (!config) throw new Error("未找到语音识别配置");
+                        
+                        // Convert base64 DataURL back to Blob
+                        const res = await fetch(audioDataUrl);
+                        const blob = await res.blob();
+                        
+                        // Transcribe
+                        const text = await transcribeAudioBlob(blob, config);
+                        
+                        if (text.trim()) {
+                            // 1. Update in DB
+                            const nextMediaData = { ...walletDebit.mediaData, label: text.trim() };
+                            // Remove temporary transcribing flag
+                            delete (nextMediaData as any).isTranscribing;
+                            const { updateMessageMediaData } = await import("@/lib/chat-storage");
+                            updateMessageMediaData(msgId, nextMediaData);
+                            
+                            // 2. Update local state
+                            setMessages(prev => prev.map(m => m.id === msgId ? { ...m, mediaData: nextMediaData } : m));
+                            
+                            // 3. Trigger AI response!
+                            setPendingGenerate(true);
+                        } else {
+                            throw new Error("语音识别为空");
+                        }
+                    } catch (err) {
+                        const errMsg = err instanceof Error ? err.message : "语音识别失败";
+                        const nextMediaData = { ...walletDebit.mediaData, label: `[转写失败: ${errMsg}]` };
+                        delete (nextMediaData as any).isTranscribing;
+                        const { updateMessageMediaData } = await import("@/lib/chat-storage");
+                        updateMessageMediaData(msgId, nextMediaData);
+                        setMessages(prev => prev.map(m => m.id === msgId ? { ...m, mediaData: nextMediaData } : m));
+                    }
+                })();
+            }
+            return true;
+        }
+
         setPendingGenerate(true);
         return true;
     };
@@ -6461,9 +6459,9 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
             {richModal === "voice_msg" && (
                 <VoiceRecordModal
                     characterId={session.contactId}
-                    onSend={(text, audioDataUrl) => {
+                    onSend={(text, audioDataUrl, isTranscribing) => {
                         setRichModal(null);
-                        sendRichMessage("audio", { label: text }, "", audioDataUrl);
+                        sendRichMessage("audio", { label: isTranscribing ? "识别中..." : text, isTranscribing }, "", audioDataUrl);
                     }}
                     onClose={() => setRichModal(null)}
                 />
