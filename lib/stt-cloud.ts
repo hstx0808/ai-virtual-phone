@@ -21,9 +21,20 @@ const TRANSCRIBE_TIMEOUT_MS = 60_000;
 const MAX_RECORDING_MS = 60_000;
 
 function toCloudSttConfig(config: VoiceApiConfig | undefined | null): CloudSttConfig | null {
-    if (!config || config.provider !== "OpenAI") return null;
+    if (!config || !config.enableSTT) return null;
     if (!config.apiKey?.trim()) return null;
-    if (config.enableSTT === false) return null;
+    
+    // SiliconFlow 支持 STT
+    if (config.provider === "SiliconFlow") {
+        return {
+            baseUrl: (config.baseUrl || "https://api.siliconflow.cn/v1").trim().replace(/\/+$/, ""),
+            apiKey: config.apiKey.trim(),
+            model: config.sttModel?.trim() || "whisper-large-v3",
+        };
+    }
+    
+    // OpenAI 兼容的 STT（包括官方 OpenAI 和可能的其他兼容服务）
+    if (config.provider !== "OpenAI") return null;
     return {
         baseUrl: (config.baseUrl || "https://api.openai.com/v1").trim().replace(/\/+$/, ""),
         apiKey: config.apiKey.trim(),

@@ -10,7 +10,7 @@ import { ConfirmDialog } from "@/components/ui/modal";
 import { Toggle, Input } from "@/components/ui/form";
 import { Alert } from "@/components/ui/feedback";
 
-const SUPPORTED_VOICE_PROVIDERS = new Set(["Minimax", "OpenAI", "FishAudio"]);
+const SUPPORTED_VOICE_PROVIDERS = new Set(["Minimax", "OpenAI", "FishAudio", "SiliconFlow"]);
 const MINIMAX_BASE_URL_OPTIONS = [
     { id: "cn", label: "国内版", baseUrl: "https://api.minimaxi.com/v1" },
     { id: "global", label: "海外版", baseUrl: "https://api.minimax.io/v1" },
@@ -30,7 +30,8 @@ const VOICE_PROVIDER_OPTIONS = [
     { value: "OpenAI", label: "OpenAI TTS" },
     { value: "MinimaxCN", label: "Minimax 语音国内版" },
     { value: "MinimaxGlobal", label: "Minimax 语音海外版" },
-    { value: "FishAudio", label: "Fish Audio" },
+    { value: "FishAudio", label: "Fish Audio (TTS)" },
+    { value: "SiliconFlow", label: "硅基流动 (STT + TTS)" },
 ];
 
 const DEFAULT_VOICE_CONFIGS: VoiceApiConfig[] = [
@@ -230,6 +231,7 @@ function makeCloneVoiceId(config: VoiceApiConfig): string {
 function providerSelectValue(config: VoiceApiConfig): string {
     if (config.provider === "OpenAI") return "OpenAI";
     if (config.provider === "FishAudio") return "FishAudio";
+    if (config.provider === "SiliconFlow") return "SiliconFlow";
     return config.baseUrl === GLOBAL_MINIMAX_BASE_URL ? "MinimaxGlobal" : "MinimaxCN";
 }
 
@@ -329,6 +331,20 @@ export function VoiceSettings() {
                 baseUrl: "https://api.fish.audio/v1",
                 model: "s2.1-pro-free",
                 defaultVoice: "inti-2d4a5527a7e44d8bb63519ca804f1a08",
+            });
+            setManualModelIds(prev => ({ ...prev, [id]: false }));
+            setManualVoiceIds(prev => ({ ...prev, [id]: true }));
+            return;
+        }
+        if (providerOption === "SiliconFlow") {
+            updateConfig(id, {
+                provider: "SiliconFlow",
+                baseUrl: "https://api.siliconflow.cn/v1",
+                model: "FunAudioLLM/CosyVoice2-0.5B",
+                sttModel: "whisper-large-v3",
+                defaultVoice: "",
+                enableSTT: true,
+                enableTTS: true,
             });
             setManualModelIds(prev => ({ ...prev, [id]: false }));
             setManualVoiceIds(prev => ({ ...prev, [id]: true }));
@@ -698,7 +714,7 @@ export function VoiceSettings() {
                                                 placeholder="输入密钥..."
                                             />
                                         </div>
-                                        {(config.provider === "OpenAI" || config.provider === "FishAudio") && (
+                                        {(config.provider === "OpenAI" || config.provider === "FishAudio" || config.provider === "SiliconFlow") && (
                                             <>
                                                 <div className="flex flex-col gap-1">
                                                     <label className="menu-desc ml-1">接口地址 (Base URL)</label>
@@ -706,7 +722,11 @@ export function VoiceSettings() {
                                                         type="text"
                                                         value={config.baseUrl || ""}
                                                         onChange={(e) => updateConfig(config.id, { baseUrl: e.target.value })}
-                                                        placeholder={config.provider === "OpenAI" ? "https://api.openai.com/v1" : "https://api.fish.audio/v1"}
+                                                        placeholder={
+                                                            config.provider === "OpenAI" ? "https://api.openai.com/v1" :
+                                                            config.provider === "FishAudio" ? "https://api.fish.audio/v1" :
+                                                            "https://api.siliconflow.cn/v1"
+                                                        }
                                                     />
                                                 </div>
                                                 <div className="flex flex-col gap-1">
@@ -732,9 +752,12 @@ export function VoiceSettings() {
                                                         </div>
                                                     ) : (
                                                         <select
-                                                            value={config.provider === "OpenAI"
-                                                                ? (config.model === "tts-1" || config.model === "tts-1-hd" ? config.model : "__manual__")
-                                                                : (config.model === "s2.1-pro-free" || config.model === "s2.1-pro" ? config.model : "__manual__")
+                                                            value={
+                                                                config.provider === "OpenAI"
+                                                                    ? (config.model === "tts-1" || config.model === "tts-1-hd" ? config.model : "__manual__")
+                                                                    : config.provider === "FishAudio"
+                                                                        ? (config.model === "s2.1-pro-free" || config.model === "s2.1-pro" ? config.model : "__manual__")
+                                                                        : "__manual__"
                                                             }
                                                             onChange={(e) => {
                                                                 if (e.target.value === "__manual__") {
@@ -750,27 +773,41 @@ export function VoiceSettings() {
                                                                     <option value="tts-1">tts-1</option>
                                                                     <option value="tts-1-hd">tts-1-hd</option>
                                                                 </>
-                                                            ) : (
+                                                            ) : config.provider === "FishAudio" ? (
                                                                 <>
                                                                     <option value="s2.1-pro-free">s2.1-pro-free</option>
                                                                     <option value="s2.1-pro">s2.1-pro</option>
                                                                 </>
+                                                            ) : (
+                                                                <>
+                                                                    <option value="FunAudioLLM/CosyVoice2-0.5B">CosyVoice2-0.5B</option>
+                                                                    <option value="FunAudioLLM/CosyVoice-300M">CosyVoice-300M</option>
+                                                                    <option value="speecht5_tts">SpeechT5</option>
+                                                                    <option value="__manual__">手动输入...</option>
+                                                                </>
                                                             )}
-                                                            <option value="__manual__">手动输入...</option>
                                                         </select>
                                                     )}
                                                 </div>
-                                                {config.provider === "OpenAI" && (
-                                                    <div className="flex flex-col gap-1">
-                                                        <label className="menu-desc ml-1">识别模型 (STT Model)</label>
-                                                        <Input
-                                                            type="text"
-                                                            value={config.sttModel || ""}
-                                                            onChange={(e) => updateConfig(config.id, { sttModel: e.target.value })}
-                                                            placeholder="whisper-1（留空使用默认）"
-                                                        />
-                                                        <span className="menu-desc ml-1">通话「按住说话」用它把录音转成文字（非 iOS 设备生效），走同一个接口地址与密钥</span>
-                                                    </div>
+                                                {/* STT 配置只对 OpenAI 和 SiliconFlow 显示 */}
+                                                {(config.provider === "OpenAI" || config.provider === "SiliconFlow") && (
+                                                    <>
+                                                        <div className="flex flex-col gap-1">
+                                                            <label className="menu-desc ml-1">识别模型 (STT Model)</label>
+                                                            <Input
+                                                                type="text"
+                                                                value={config.sttModel || ""}
+                                                                onChange={(e) => updateConfig(config.id, { sttModel: e.target.value })}
+                                                                placeholder={
+                                                                    config.provider === "OpenAI" ? "whisper-1" :
+                                                                    "whisper-large-v3（硅基流动免费额度高）"
+                                                                }
+                                                            />
+                                                            <span className="menu-desc ml-1">
+                                                                通话「按住说话」用它把录音转成文字，走同一个接口地址与密钥
+                                                            </span>
+                                                        </div>
+                                                    </>
                                                 )}
                                             </>
                                         )}
