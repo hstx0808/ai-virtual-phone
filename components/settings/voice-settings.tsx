@@ -10,7 +10,7 @@ import { ConfirmDialog } from "@/components/ui/modal";
 import { Toggle, Input } from "@/components/ui/form";
 import { Alert } from "@/components/ui/feedback";
 
-const SUPPORTED_VOICE_PROVIDERS = new Set(["Minimax", "OpenAI"]);
+const SUPPORTED_VOICE_PROVIDERS = new Set(["Minimax", "OpenAI", "FishAudio"]);
 const MINIMAX_BASE_URL_OPTIONS = [
     { id: "cn", label: "国内版", baseUrl: "https://api.minimaxi.com/v1" },
     { id: "global", label: "海外版", baseUrl: "https://api.minimax.io/v1" },
@@ -30,6 +30,7 @@ const VOICE_PROVIDER_OPTIONS = [
     { value: "OpenAI", label: "OpenAI TTS" },
     { value: "MinimaxCN", label: "Minimax 语音国内版" },
     { value: "MinimaxGlobal", label: "Minimax 语音海外版" },
+    { value: "FishAudio", label: "Fish Audio" },
 ];
 
 const DEFAULT_VOICE_CONFIGS: VoiceApiConfig[] = [
@@ -170,6 +171,10 @@ const DEFAULT_OPENAI_VOICES = [
     { id: "shimmer", name: "Shimmer" },
 ];
 
+const DEFAULT_FISH_AUDIO_VOICES = [
+    { id: "inti-2d4a5527a7e44d8bb63519ca804f1a08", name: "默认音色 (inti-2d4a5527a7e44d8bb63519ca804f1a08)" },
+];
+
 type VoiceOption = { id: string; name: string; createdAt?: number };
 
 function uniqueOptions(options: VoiceOption[]): VoiceOption[] {
@@ -182,7 +187,9 @@ function uniqueOptions(options: VoiceOption[]): VoiceOption[] {
 }
 
 function defaultVoiceOptions(provider: string): VoiceOption[] {
-    return provider === "OpenAI" ? DEFAULT_OPENAI_VOICES : DEFAULT_MINIMAX_VOICES;
+    if (provider === "OpenAI") return DEFAULT_OPENAI_VOICES;
+    if (provider === "FishAudio") return DEFAULT_FISH_AUDIO_VOICES;
+    return DEFAULT_MINIMAX_VOICES;
 }
 
 function voiceOptionsForConfig(config: VoiceApiConfig, fetchedVoices: Record<string, VoiceOption[]>): VoiceOption[] {
@@ -222,6 +229,7 @@ function makeCloneVoiceId(config: VoiceApiConfig): string {
 
 function providerSelectValue(config: VoiceApiConfig): string {
     if (config.provider === "OpenAI") return "OpenAI";
+    if (config.provider === "FishAudio") return "FishAudio";
     return config.baseUrl === GLOBAL_MINIMAX_BASE_URL ? "MinimaxGlobal" : "MinimaxCN";
 }
 
@@ -313,6 +321,17 @@ export function VoiceSettings() {
             });
             setManualModelIds(prev => ({ ...prev, [id]: true }));
             setManualVoiceIds(prev => ({ ...prev, [id]: false }));
+            return;
+        }
+        if (providerOption === "FishAudio") {
+            updateConfig(id, {
+                provider: "FishAudio",
+                baseUrl: "https://api.fish.audio/v1",
+                model: "s2.1-pro-free",
+                defaultVoice: "inti-2d4a5527a7e44d8bb63519ca804f1a08",
+            });
+            setManualModelIds(prev => ({ ...prev, [id]: false }));
+            setManualVoiceIds(prev => ({ ...prev, [id]: true }));
             return;
         }
         const wasMinimax = current?.provider === "Minimax";
@@ -499,6 +518,8 @@ export function VoiceSettings() {
 
             } else if (config.provider === "OpenAI") {
                 setFetchedVoices(prev => ({ ...prev, [config.id]: DEFAULT_OPENAI_VOICES }));
+            } else if (config.provider === "FishAudio") {
+                setFetchedVoices(prev => ({ ...prev, [config.id]: DEFAULT_FISH_AUDIO_VOICES }));
             } else {
                 throw new Error("该服务商暂不支持拉取模型列表");
             }
@@ -677,7 +698,7 @@ export function VoiceSettings() {
                                                 placeholder="输入密钥..."
                                             />
                                         </div>
-                                        {config.provider === "OpenAI" && (
+                                        {(config.provider === "OpenAI" || config.provider === "FishAudio") && (
                                             <>
                                                 <div className="flex flex-col gap-1">
                                                     <label className="menu-desc ml-1">接口地址 (Base URL)</label>
@@ -685,7 +706,7 @@ export function VoiceSettings() {
                                                         type="text"
                                                         value={config.baseUrl || ""}
                                                         onChange={(e) => updateConfig(config.id, { baseUrl: e.target.value })}
-                                                        placeholder="https://api.openai.com/v1"
+                                                        placeholder={config.provider === "OpenAI" ? "https://api.openai.com/v1" : "https://api.fish.audio/v1"}
                                                     />
                                                 </div>
                                                 <div className="flex flex-col gap-1">
@@ -711,7 +732,10 @@ export function VoiceSettings() {
                                                         </div>
                                                     ) : (
                                                         <select
-                                                            value={config.model === "tts-1" || config.model === "tts-1-hd" ? config.model : "__manual__"}
+                                                            value={config.provider === "OpenAI"
+                                                                ? (config.model === "tts-1" || config.model === "tts-1-hd" ? config.model : "__manual__")
+                                                                : (config.model === "s2.1-pro-free" || config.model === "s2.1-pro" ? config.model : "__manual__")
+                                                            }
                                                             onChange={(e) => {
                                                                 if (e.target.value === "__manual__") {
                                                                     setManualModelIds(prev => ({ ...prev, [config.id]: true }));
@@ -721,22 +745,33 @@ export function VoiceSettings() {
                                                             }}
                                                             className="ui-select"
                                                         >
-                                                            <option value="tts-1">tts-1</option>
-                                                            <option value="tts-1-hd">tts-1-hd</option>
+                                                            {config.provider === "OpenAI" ? (
+                                                                <>
+                                                                    <option value="tts-1">tts-1</option>
+                                                                    <option value="tts-1-hd">tts-1-hd</option>
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <option value="s2.1-pro-free">s2.1-pro-free</option>
+                                                                    <option value="s2.1-pro">s2.1-pro</option>
+                                                                </>
+                                                            )}
                                                             <option value="__manual__">手动输入...</option>
                                                         </select>
                                                     )}
                                                 </div>
-                                                <div className="flex flex-col gap-1">
-                                                    <label className="menu-desc ml-1">识别模型 (STT Model)</label>
-                                                    <Input
-                                                        type="text"
-                                                        value={config.sttModel || ""}
-                                                        onChange={(e) => updateConfig(config.id, { sttModel: e.target.value })}
-                                                        placeholder="whisper-1（留空使用默认）"
-                                                    />
-                                                    <span className="menu-desc ml-1">通话「按住说话」用它把录音转成文字（非 iOS 设备生效），走同一个接口地址与密钥</span>
-                                                </div>
+                                                {config.provider === "OpenAI" && (
+                                                    <div className="flex flex-col gap-1">
+                                                        <label className="menu-desc ml-1">识别模型 (STT Model)</label>
+                                                        <Input
+                                                            type="text"
+                                                            value={config.sttModel || ""}
+                                                            onChange={(e) => updateConfig(config.id, { sttModel: e.target.value })}
+                                                            placeholder="whisper-1（留空使用默认）"
+                                                        />
+                                                        <span className="menu-desc ml-1">通话「按住说话」用它把录音转成文字（非 iOS 设备生效），走同一个接口地址与密钥</span>
+                                                    </div>
+                                                )}
                                             </>
                                         )}
 
