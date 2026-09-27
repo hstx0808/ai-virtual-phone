@@ -48,11 +48,12 @@ import { generateGroupChatCompletion, generateGroupOfflineChatCompletion, parseG
 import { appendChatOfflineTurn, deleteChatOfflineTurn, deleteChatOfflineTurnsFrom, extractThinkingTag, loadChatOfflineTurns, parseOfflineResponse, saveChatOfflineTurns, updateChatOfflineTurn, type ChatOfflineTurn } from "@/lib/chat-offline-storage";
 import { applyDisplayRegex, applyEditRegex } from "@/lib/llm-prompt-assembler";
 import { scheduleFollowUp, cancelFollowUp, cancelBackgroundGeneration, isBackgroundReplyGenerating } from "@/lib/follow-up-service";
+import { isCallRecordingSupported, resolveCloudSttConfig, startCallRecording, transcribeAudioBlob } from "@/lib/stt-cloud";
 import { useKeyboardDismissAutoSend } from "@/components/chat/use-keyboard-dismiss-auto-send";
 import { cancelBailoutKey } from "@/lib/push-bailout-client";
 import { PENDING_REPLY_PREFIX } from "@/lib/friend-request-engine";
 import type { UserIdentity } from "@/components/settings/user-identity";
-import { AlertCircle, Blocks, Check, Trash2, User, ChevronLeft, ChevronRight, Clapperboard, Clock, Gift, Languages, Loader2, MoreHorizontal, X } from "lucide-react";
+import { AlertCircle, Blocks, Check, Trash2, User, ChevronLeft, ChevronRight, Clapperboard, Clock, Gift, Languages, Loader2, Mic, MoreHorizontal, X } from "lucide-react";
 import { setDebugChatState } from "@/lib/debug-store";
 import { SessionCustomCSS } from "@/components/ui/session-custom-css";
 import { setChatActive } from "@/lib/music-action-queue";
@@ -666,6 +667,10 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     const [suggestClosed, setSuggestClosed] = useState(false);
     // 围观群/被禁言：输入与富媒体入口全部锁定，只留线下切换和生成按钮
     const [muteNowTick, setMuteNowTick] = useState(() => Date.now());
+    // 语音输入状态
+    const [isRecording, setIsRecording] = useState(false);
+    const [recordingError, setRecordingError] = useState("");
+    const recordingRef = useRef<{ stop: () => Promise<Blob | null>; cancel: () => void } | null>(null);
     useEffect(() => {
         if (!muteUntilMs || muteUntilMs <= Date.now()) return;
         const timer = window.setInterval(() => setMuteNowTick(Date.now()), 30000);
@@ -673,6 +678,17 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     }, [muteUntilMs]);
     const muteRemainingMs = muteUntilMs > muteNowTick ? muteUntilMs - muteNowTick : 0;
     const inputLocked = isSpectator || muteRemainingMs > 0;
+
+    // 组件卸载时清理录音
+    useEffect(() => {
+        return () => {
+            if (recordingRef.current) {
+                recordingRef.current.cancel();
+                recordingRef.current = null;
+            }
+            setIsRecording(false);
+        };
+    }, []);
 
     const resetTextareaHeight = () => {
         if (textareaRef.current) textareaRef.current.style.height = "auto";
@@ -816,6 +832,93 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
                     : (theaterMode ? "写下番外指令..." : undefined)}
             />
 
+            {/* 语音输入按钮 */}
+            {!isSpectator && !inputLocked && isCallRecordingSupported() && resolveCloudSttConfig(characterId) && (
+                <button
+                    type="button"
+                    {...(isRecording ? {
+                        onPointerDown: async (e) => {
+                            e.preventDefault();
+                            try {
+                                const recording = await startCallRecording();
+                                recordingRef.current = recording;
+                                setIsRecording(true);
+                                setRecordingError("");
+                            } catch (err) {
+                                setRecordingError(err instanceof Error ? err.message : "无法启动录音");
+                            }
+                        },
+                        onPointerUp: async () => {
+                            if (!recordingRef.current) return;
+                            const recording = recordingRef.current;
+                            recordingRef.current = null;
+                            setIsRecording(false);
+                            try {
+                                const blob = await recording.stop();
+                                if (!blob) return;
+                                const config = resolveCloudSttConfig(characterId);
+                                if (!config) return;
+                                const text = await transcribeAudioBlob(blob, config);
+                                if (text.trim()) {
+                                    appendText(text.trim());
+                                }
+                            } catch (err) {
+                                setRecordingError(err instanceof Error ? err.message : "语音识别失败");
+                            }
+                        },
+                        onPointerCancel: () => {
+                            if (recordingRef.current) {
+                                recordingRef.current.cancel();
+                                recordingRef.current = null;
+                                setIsRecording(false);
+                            }
+                        },
+                    } : {
+                        onClick: async () => {
+                            if (isGenerating) return;
+                            try {
+                                const recording = await startCallRecording();
+                                recordingRef.current = recording;
+                                setIsRecording(true);
+                                setRecordingError("");
+                            } catch (err) {
+                                setRecordingError(err instanceof Error ? err.message : "无法启动录音");
+                            }
+                        },
+                        onPointerUp: async () => {
+                            if (!recordingRef.current) return;
+                            const recording = recordingRef.current;
+                            recordingRef.current = null;
+                            setIsRecording(false);
+                            try {
+                                const blob = await recording.stop();
+                                if (!blob) return;
+                                const config = resolveCloudSttConfig(characterId);
+                                if (!config) return;
+                                const text = await transcribeAudioBlob(blob, config);
+                                if (text.trim()) {
+                                    appendText(text.trim());
+                                }
+                            } catch (err) {
+                                setRecordingError(err instanceof Error ? err.message : "语音识别失败");
+                            }
+                        },
+                    })}
+                    className={`ui-bare-btn text-[var(--c-text)] ${isRecording ? 'text-red-500' : ''}`}
+                    aria-label={isRecording ? "停止录音" : "按住说话"}
+                    title={isRecording ? "停止录音" : "按住说话"}
+                    style={inputLocked ? { opacity: 0.35 } : undefined}
+                >
+                    {isRecording ? (
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <rect x="9" y="9" width="6" height="6" rx="1" />
+                        </svg>
+                    ) : (
+                        <Mic size={24} strokeWidth={1.5} />
+                    )}
+                </button>
+            )}
+
             <div className="chat-input-actions">
                 <button
                     onClick={onToggleOfflineMode}
@@ -942,6 +1045,17 @@ const OfflineTextInputBar = memo(forwardRef<OfflineTextInputHandle, {
     const [inputText, setInputText] = useState("");
     const inputTextRef = useRef("");
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+    // 组件卸载时清理录音
+    useEffect(() => {
+        return () => {
+            if (recordingRef.current) {
+                recordingRef.current.cancel();
+                recordingRef.current = null;
+            }
+            setIsRecording(false);
+        };
+    }, []);
 
     const resetTextareaHeight = () => {
         if (textareaRef.current) textareaRef.current.style.height = "auto";
