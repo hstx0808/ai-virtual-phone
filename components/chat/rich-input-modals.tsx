@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { CallSttWarningDialog, hideCallSttWarningPermanently, isCallSttWarningHidden } from "./call-stt-warning-dialog";
 import { isAndroidBrowser } from "./voice-input-platform";
+import { resolveCloudSttConfig, transcribeAudioBlob } from "@/lib/stt-cloud";
 
 // ── Photo Input Modal ─────────────────────────────
 
@@ -330,8 +331,11 @@ interface VoiceRecordModalProps {
 }
 
 export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordModalProps) {
-    const androidTextInputOnlyRef = useRef(isAndroidBrowser());
+    const hasCloudStt = useRef(resolveCloudSttConfig(characterId) !== null);
+    const androidTextInputOnlyRef = useRef(isAndroidBrowser() && !hasCloudStt.current);
     const androidTextInputOnly = androidTextInputOnlyRef.current;
+    const useCloudSttRef = useRef(hasCloudStt.current);
+
     const [state, setState] = useState<"idle" | "recording" | "processing" | "done">("idle");
     const [inputMode, setInputMode] = useState<"voice" | "text">(() => androidTextInputOnly ? "text" : "voice");
     const [interim, setInterim] = useState("");
@@ -375,20 +379,22 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
         chunksRef.current = [];
         gotFinalRef.current = false;
 
-        // Start STT (browser Web Speech API) before opening the mic. Unsupported
-        // Android browsers should show the fallback prompt without flashing recording UI.
-        const { createSTTSession } = await import("@/lib/stt-service");
-        const stt = createSTTSession({
-            onInterim: (t) => setInterim(t),
-            onFinal: (t) => { gotFinalRef.current = true; setFinalText(t); setState("done"); recorderRef.current?.stop(); },
-            onError: (e) => { setInterim(e); setState("idle"); recorderRef.current?.stop(); showSttCompatibilityWarning(); },
-            onEnd: () => { if (!gotFinalRef.current) { setState("idle"); recorderRef.current?.stop(); } },
-            onNoSpeech: () => { setInterim("未检测到语音"); setState("idle"); recorderRef.current?.stop(); showSttCompatibilityWarning(); },
-        }, "zh-CN");
+        let stt: { start: () => void; stop: () => void; abort: () => void; isSupported: boolean } | null = null;
+        if (!useCloudSttRef.current) {
+            // Start STT (browser Web Speech API) before opening the mic if not using Cloud STT
+            const { createSTTSession } = await import("@/lib/stt-service");
+            stt = createSTTSession({
+                onInterim: (t) => setInterim(t),
+                onFinal: (t) => { gotFinalRef.current = true; setFinalText(t); setState("done"); recorderRef.current?.stop(); },
+                onError: (e) => { setInterim(e); setState("idle"); recorderRef.current?.stop(); showSttCompatibilityWarning(); },
+                onEnd: () => { if (!gotFinalRef.current) { setState("idle"); recorderRef.current?.stop(); } },
+                onNoSpeech: () => { setInterim("未检测到语音"); setState("idle"); recorderRef.current?.stop(); showSttCompatibilityWarning(); },
+            }, "zh-CN") as any;
 
-        if (!stt.isSupported) {
-            showSttCompatibilityWarning();
-            return;
+            if (stt && !stt.isSupported) {
+                showSttCompatibilityWarning();
+                return;
+            }
         }
 
         if (!navigator.mediaDevices?.getUserMedia) {
@@ -411,21 +417,50 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
         const recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm" });
         recorderRef.current = recorder;
         recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
-        recorder.onstop = () => {
+        recorder.onstop = async () => {
             stream!.getTracks().forEach(t => t.stop());
             if (chunksRef.current.length > 0) {
                 const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+                
+                // 1. Read as Data URL
                 const reader = new FileReader();
                 reader.onload = () => setAudioDataUrl(reader.result as string);
                 reader.readAsDataURL(blob);
+
+                // 2. Transcribe with Cloud STT if enabled
+                if (useCloudSttRef.current) {
+                    try {
+                        const config = resolveCloudSttConfig(characterId);
+                        if (config) {
+                            const text = await transcribeAudioBlob(blob, config);
+                            if (text.trim()) {
+                                setFinalText(text.trim());
+                                setState("done");
+                            } else {
+                                setInterim("没有识别到内容");
+                                setState("idle");
+                            }
+                        } else {
+                            setInterim("未找到语音识别配置");
+                            setState("idle");
+                        }
+                    } catch (err) {
+                        setInterim(err instanceof Error ? err.message : "语音识别失败");
+                        setState("idle");
+                    }
+                }
+            } else {
+                setState("idle");
             }
         };
         recorder.start();
 
-        sttRef.current = stt;
+        if (stt) {
+            sttRef.current = stt;
+            stt.start();
+        }
         setState("recording");
         setInterim("🎙️ 正在听...");
-        stt.start();
     }, [androidTextInputOnly, characterId, showSttCompatibilityWarning]);
 
     const stopRecording = () => {
