@@ -22,6 +22,12 @@ import { CallSttWarningDialog, hideCallSttWarningPermanently, isCallSttWarningHi
 import { isAndroidBrowser, isIOSDevice } from "./voice-input-platform";
 import { CallVolumeControl } from "./call-volume-control";
 import { startIncomingCallVibration } from "@/lib/call-vibration";
+import { CallMiniWindow } from "./call-mini-window";
+import { useCallReplyQueue } from "./use-call-reply-queue";
+import { useCallAutoChat } from "./use-call-auto-chat";
+import { useShellCallOverlay } from "./use-shell-call-overlay";
+import { persistCallAudio } from "@/lib/call-audio-storage";
+import { updateMessageMediaData } from "@/lib/chat-storage";
 
 // ── Types ───────────────────────────────────────────
 
@@ -76,6 +82,39 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const androidTextInputOnly = androidTextInputOnlyRef.current;
     const playCallAudio = iosDevice ? playAudioBlob : playAudioBlobViaMediaElement;
     const keyboardOffsetStyle = useCallKeyboardOffsetStyle();
+
+    // 消息排队补发：忙时入队，回到 IDLE 自动发
+    const replyQueue = useCallReplyQueue(callState, async (queuedText) => {
+        await runConversationTurn(queuedText);
+    });
+
+    // 自动搭话防冷场
+    useCallAutoChat({
+        enabled: true,
+        callState,
+        onAutoChat: () => {
+            if (callState === "IDLE") {
+                runConversationTurn();
+            }
+        },
+    });
+
+    // 原生系统浮窗同步桥
+    useShellCallOverlay({
+        name: character.name,
+        avatar: character.avatar || "",
+        sessionId: session.id,
+        getDurationSeconds: () => callDuration,
+        onHangup: () => handleHangup(),
+        onRestore: () => onRestore?.(),
+        onReply: (text) => {
+            if (callState === "IDLE") {
+                runConversationTurn(text);
+            } else {
+                replyQueue.enqueue(text);
+            }
+        },
+    });
     const [callState, setCallState] = useState<CallState>("CONNECTING");
     const hasConnectedRef = useRef(false);
     const [callDuration, setCallDuration] = useState(0);
@@ -400,6 +439,16 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                     if (stateRef.current === "ENDED") return;
 
                     if (audioBlob) {
+                        void persistCallAudio(audioBlob).then((audioRef) => {
+                            const lastMsg = messagesRef.current[messagesRef.current.length - 1];
+                            if (lastMsg && lastMsg.role === "assistant") {
+                                updateMessageMediaData(lastMsg.id, {
+                                    ...(lastMsg.mediaData || {}),
+                                    callAudioRef: audioRef,
+                                });
+                            }
+                        }).catch(e => console.warn("[VoiceCall] persistCallAudio error:", e));
+
                         const { promise, abort } = playCallAudio(audioBlob);
                         audioAbortRef.current = abort;
                         await promise;
@@ -633,19 +682,16 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
 
     if (minimized) {
         return (
-            <button
-                type="button"
-                className="call-mini-window"
-                style={{ backgroundImage: `url(${bgImageResolved || character.avatar || ""})` }}
-                onClick={onRestore}
-                aria-label={`返回与${character.name}的语音通话`}
-                title="点击返回通话"
-            >
-                <span className="call-mini-window-overlay" />
-                <span className="call-mini-window-name">{character.name}</span>
-            </button>
+            <CallMiniWindow
+                name={character.name}
+                avatar={bgImageResolved || character.avatar || ""}
+                callDuration={formatTime(callDuration)}
+                pendingCount={replyQueue.pendingCount}
+                onRestore={() => onRestore?.()}
+                onHangup={handleHangup}
+            />
         );
-    }
+    }}
 
     return (
         <div
