@@ -691,7 +691,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                 onHangup={handleHangup}
             />
         );
-    }}
+    }
 
     return (
         <div
