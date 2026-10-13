@@ -79,3 +79,9 @@
   for = "/default-wallpaper.webp"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
+
+# 禁止 CDN 缓存 Service Worker，确保用户能立即收到新版静态资源
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
