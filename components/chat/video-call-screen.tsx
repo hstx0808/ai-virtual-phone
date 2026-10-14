@@ -22,6 +22,7 @@ import { CallSttWarningDialog, hideCallSttWarningPermanently, isCallSttWarningHi
 import { isAndroidBrowser, isIOSDevice } from "./voice-input-platform";
 import { CallVolumeControl } from "./call-volume-control";
 import { startIncomingCallVibration } from "@/lib/call-vibration";
+import { CallAutoChatControl } from "./call-auto-chat-control";
 import { CallMiniWindow } from "./call-mini-window";
 import { useCallReplyQueue } from "./use-call-reply-queue";
 import { useCallAutoChat } from "./use-call-auto-chat";
@@ -623,9 +624,8 @@ export function VideoCallScreen({ session, character, onEnd, onConnect, initiato
         await runConversationTurn(queuedText);
     });
 
-    // 自动搭话防冷场
+    // 自动搭话防冷场（可实时开关，见 use-call-auto-chat.ts 全局配置）
     useCallAutoChat({
-        enabled: true,
         callState,
         onAutoChat: () => {
             if (callState === "IDLE") {
@@ -681,6 +681,7 @@ export function VideoCallScreen({ session, character, onEnd, onConnect, initiato
     return (
         <div className="absolute inset-0 z-[100] flex flex-col bg-black text-white overflow-hidden call-keyboard-shift" style={keyboardOffsetStyle}>
             <CallVolumeControl />
+            <CallAutoChatControl />
 
             {onMinimize && callState !== "ENDED" && (
                 <button
