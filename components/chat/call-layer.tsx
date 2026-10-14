@@ -9,7 +9,7 @@ import {
   minimizeCall,
   restoreCall,
 } from "@/lib/call-session-store";
-import { loadSessions } from "@/lib/chat-storage";
+import { loadChatSessions } from "@/lib/chat-storage";
 import { loadCharacters } from "@/lib/character-storage";
 import { VoiceCallScreen } from "@/components/chat/voice-call-screen";
 import { VideoCallScreen } from "@/components/chat/video-call-screen";
@@ -24,12 +24,22 @@ export function CallLayer() {
 
   const sessions = useMemo(() => {
     if (!activeCall) return [];
-    return loadSessions();
+    try {
+      return loadChatSessions() || [];
+    } catch (e) {
+      console.warn("[CallLayer] loadChatSessions failed:", e);
+      return [];
+    }
   }, [activeCall]);
 
   const characters = useMemo(() => {
     if (!activeCall) return [];
-    return loadCharacters();
+    try {
+      return loadCharacters() || [];
+    } catch (e) {
+      console.warn("[CallLayer] loadCharacters failed:", e);
+      return [];
+    }
   }, [activeCall]);
 
   if (!activeCall) return null;
@@ -37,34 +47,47 @@ export function CallLayer() {
   const currentSession = sessions.find((s) => s.id === activeCall.sessionId);
   if (!currentSession) return null;
 
-  const contactCharacter = characters.find((c) => c.id === activeCall.characterId);
+  // 单聊处理
+  if (activeCall.kind === "voice" || activeCall.kind === "video") {
+    const contactCharacter = characters.find((c) => c.id === activeCall.characterId);
+    if (!contactCharacter) return null;
 
-  const commonProps = {
-    session: currentSession,
-    character: contactCharacter,
-    minimized: activeCall.minimized,
-    onMinimize: minimizeCall,
-    onRestore: restoreCall,
-    onClose: endCall,
-    initiator: activeCall.initiator,
-    initiatorName: activeCall.initiatorName,
-  };
+    const commonProps = {
+      session: currentSession,
+      character: contactCharacter,
+      minimized: activeCall.minimized,
+      onMinimize: minimizeCall,
+      onRestore: restoreCall,
+      onEnd: endCall,
+      onClose: endCall,
+      initiator: activeCall.initiator,
+      initiatorName: activeCall.initiatorName,
+    };
 
-  if (activeCall.kind === "voice") {
-    return <VoiceCallScreen {...commonProps} />;
-  }
-
-  if (activeCall.kind === "video") {
+    if (activeCall.kind === "voice") {
+      return <VoiceCallScreen {...commonProps} />;
+    }
     return <VideoCallScreen {...commonProps} />;
   }
 
+  // 群聊处理
   if (activeCall.kind === "group") {
-    if (activeCall.minimized) {
-      return <GroupCallScreen {...commonProps} />;
-    }
+    const groupCharacterIds = new Set(currentSession.characterIds || []);
+    const groupCharacters = characters.filter((c) => groupCharacterIds.has(c.id));
+    if (groupCharacters.length === 0) return null;
+
+    const groupProps = {
+      type: "voice" as const,
+      session: currentSession,
+      characters: groupCharacters,
+      initiator: activeCall.initiator,
+      initiatorName: activeCall.initiatorName,
+      onEnd: endCall,
+    };
+
     return (
       <div className="absolute inset-0 z-[100]">
-        <GroupCallScreen {...commonProps} />
+        <GroupCallScreen {...groupProps} />
       </div>
     );
   }
