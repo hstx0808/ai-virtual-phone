@@ -74,11 +74,13 @@ export function VideoCallScreen({ session, character, onEnd, onConnect, initiato
     // 其余设备改按住说话 + 云端转写，播放走媒体元素。没配识别时回落旧行为。
     const iosDeviceRef = useRef(isIOSDevice());
     const iosDevice = iosDeviceRef.current;
-    const holdToTalkRef = useRef(
-        !iosDeviceRef.current && isCallRecordingSupported() && resolveCloudSttConfig(session.contactId) !== null,
-    );
+    // 免听优先（同 voice-call-screen）：配好 STT + 支持录音 → 所有设备默认"说完自动识别"
+    const sttReadyRef = useRef(resolveCloudSttConfig(session.contactId) !== null);
+    const sttReady = sttReadyRef.current;
+    const [handsFree, setHandsFree] = useState(sttReady && isCallRecordingSupported());
+    const holdToTalkRef = useRef(!sttReady && isCallRecordingSupported());
     const holdToTalk = holdToTalkRef.current;
-    const androidTextInputOnlyRef = useRef(isAndroidBrowser() && !holdToTalkRef.current);
+    const androidTextInputOnlyRef = useRef(isAndroidBrowser() && !holdToTalkRef.current && !sttReady);
     const androidTextInputOnly = androidTextInputOnlyRef.current;
     const playCallAudio = iosDevice ? playAudioBlob : playAudioBlobViaMediaElement;
     const keyboardOffsetStyle = useCallKeyboardOffsetStyle();
@@ -535,19 +537,22 @@ export function VideoCallScreen({ session, character, onEnd, onConnect, initiato
         }
     }, [androidTextInputOnly, holdToTalk, runConversationTurn, session.contactId, showSttCompatibilityWarning]);
 
+    // 免听模式（handsFree）下所有设备 IDLE 自动持续开麦，说完自动识别
     useEffect(() => {
-        if (holdToTalk) return; // 按住说话模式无自动监听
+        if (holdToTalk && !handsFree) return; // 只有"按住说话兜底"且未开免听才不自动监听
         if (inputMode === "text" && sttRef.current) {
             sttRef.current.abort();
             sttRef.current = null;
             setInterimText("");
         }
-        if (!androidTextInputOnly && inputMode === "voice" && callState === "IDLE" && !isMuted && !minimized) {
-            const timer = setTimeout(() => { if (stateRef.current === "IDLE" && !minimizedRef.current) startListening(); }, 500);
-            return () => clearTimeout(timer);
+        if (handsFree || !androidTextInputOnly) {
+            if (inputMode === "voice" && callState === "IDLE" && !isMuted && !minimized) {
+                const timer = setTimeout(() => { if (stateRef.current === "IDLE" && !minimizedRef.current) startListening(); }, 500);
+                return () => clearTimeout(timer);
+            }
         }
         if (isMuted && sttRef.current) { sttRef.current.abort(); sttRef.current = null; }
-    }, [androidTextInputOnly, holdToTalk, callState, isMuted, inputMode, minimized, startListening]);
+    }, [androidTextInputOnly, holdToTalk, handsFree, callState, isMuted, inputMode, minimized, startListening]);
 
     const handleInputModeToggle = useCallback(() => {
         if (androidTextInputOnly) {

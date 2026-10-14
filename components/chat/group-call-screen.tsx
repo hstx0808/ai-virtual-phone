@@ -61,11 +61,13 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
     // 其余设备改按住说话 + 云端转写，播放走媒体元素。没配识别时回落旧行为。
     const iosDeviceRef = useRef(isIOSDevice());
     const iosDevice = iosDeviceRef.current;
-    const holdToTalkRef = useRef(
-        !iosDeviceRef.current && isCallRecordingSupported() && resolveCloudSttConfig() !== null,
-    );
+    // 免听优先（同 voice/video-call-screen）：配好 STT + 支持录音 → 所有设备默认"说完自动识别"
+    const sttReadyRef = useRef(resolveCloudSttConfig() !== null);
+    const sttReady = sttReadyRef.current;
+    const [handsFree, setHandsFree] = useState(sttReady && isCallRecordingSupported());
+    const holdToTalkRef = useRef(!sttReady && isCallRecordingSupported());
     const holdToTalk = holdToTalkRef.current;
-    const androidTextInputOnlyRef = useRef(isAndroidBrowser() && !holdToTalkRef.current);
+    const androidTextInputOnlyRef = useRef(isAndroidBrowser() && !holdToTalkRef.current && !sttReady);
     const androidTextInputOnly = androidTextInputOnlyRef.current;
     const playCallAudio = iosDevice ? playAudioBlob : playAudioBlobViaMediaElement;
     const keyboardOffsetStyle = useCallKeyboardOffsetStyle();
@@ -353,20 +355,22 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
     }, [androidTextInputOnly, holdToTalk, runConversationTurn, characters]);
 
     useEffect(() => {
-        if (holdToTalk) return; // 按住说话模式无自动监听
+        if (holdToTalk && !handsFree) return; // 只有按住说话兜底且未开免听才不自动监听
         if (inputMode === "text" && sttRef.current) {
             sttRef.current.abort();
             sttRef.current = null;
             setInterimText("");
         }
-        if (!androidTextInputOnly && inputMode === "voice" && callState === "IDLE" && !isMuted) {
-            const timer = setTimeout(() => {
-                if (stateRef.current === "IDLE") startListening();
-            }, 500);
-            return () => clearTimeout(timer);
+        if (handsFree || !androidTextInputOnly) {
+            if (inputMode === "voice" && callState === "IDLE" && !isMuted) {
+                const timer = setTimeout(() => {
+                    if (stateRef.current === "IDLE") startListening();
+                }, 500);
+                return () => clearTimeout(timer);
+            }
         }
         if (isMuted && sttRef.current) { sttRef.current.abort(); sttRef.current = null; }
-    }, [androidTextInputOnly, holdToTalk, callState, isMuted, inputMode, startListening]);
+    }, [androidTextInputOnly, holdToTalk, handsFree, callState, isMuted, inputMode, startListening]);
 
     const handleInputModeToggle = useCallback(() => {
         if (androidTextInputOnly) {

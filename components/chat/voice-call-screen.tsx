@@ -11,7 +11,7 @@ import { resolveUserIdentity } from "@/lib/settings-storage";
 import { cancelFollowUp } from "@/lib/follow-up-service";
 import { createSTTSession, type STTSession } from "@/lib/stt-service";
 import { resolveVoiceConfig, synthesizeSpeech, playAudioBlob, playAudioBlobViaMediaElement, setCallAudioSessionActive } from "@/lib/tts-service";
-import { isCallRecordingSupported, resolveCloudSttConfig, startCallRecording, transcribeAudioBlob } from "@/lib/stt-cloud";
+import { isCallRecordingSupported, resolveCloudSttConfig } from "@/lib/stt-cloud";
 import { useHoldToTalk } from "./use-hold-to-talk";
 import { suspendKeepAliveForCall, resumeKeepAliveAfterCall } from "@/lib/use-weixin-bridge";
 import { BilingualTextBlock } from "./message-bubble";
@@ -75,16 +75,20 @@ export function VoiceCallScreen({ session, character, onEnd, onClose, onConnect,
         if (onClose) onClose();
         else if (onEnd) onEnd();
     }, [onClose, onEnd]);
-    // iOS 保留 Web Speech 免提 + Web Audio 播放（麦克风会话共存的老方案）；
-    // 其余设备改「按住说话 + 云端转写」，播放走媒体元素（音量键可控、无静音拨键坑）。
-    // 没配 OpenAI 兼容识别时回落旧行为（安卓=文字输入）。
+    // 免提优先：配好 STT（如硅基流动 SenseVoiceSmall）+ 浏览器支持录音 → 所有设备（含安卓）
+    // 都默认"说完自动识别"，不用一直按着麦克风；没配 STT 才回落最保险的"文字输入"兜底。
+    // 播放：iOS 保留 Web Audio（麦克风会话共存的老方案），非 iOS 走媒体元素（音量键可控、无静音拨键坑）。
     const iosDeviceRef = useRef(isIOSDevice());
     const iosDevice = iosDeviceRef.current;
-    const holdToTalkRef = useRef(
-        !iosDeviceRef.current && isCallRecordingSupported() && resolveCloudSttConfig(session.contactId) !== null,
-    );
+    const sttReadyRef = useRef(resolveCloudSttConfig(session.contactId) !== null);
+    const sttReady = sttReadyRef.current;
+    // 免听模式：配好 STT 才可用；进来默认开启（这就是"全自动语音对话"）
+    const [handsFree, setHandsFree] = useState(sttReady && isCallRecordingSupported());
+    // 兜底"按住说话"：没配 STT 时才会用到（微信式按住），和免听不冲突
+    const holdToTalkRef = useRef(!sttReady && isCallRecordingSupported());
     const holdToTalk = holdToTalkRef.current;
-    const androidTextInputOnlyRef = useRef(isAndroidBrowser() && !holdToTalkRef.current);
+    // 文字输入兜底：既没免听也没按住说话（没配 STT 且浏览器不支持录音）
+    const androidTextInputOnlyRef = useRef(isAndroidBrowser() && !holdToTalkRef.current && !sttReady);
     const androidTextInputOnly = androidTextInputOnlyRef.current;
     const playCallAudio = iosDevice ? playAudioBlob : playAudioBlobViaMediaElement;
     const keyboardOffsetStyle = useCallKeyboardOffsetStyle();
@@ -94,12 +98,10 @@ export function VoiceCallScreen({ session, character, onEnd, onClose, onConnect,
     const [subtitles, setSubtitles] = useState<SubtitleEntry[]>([]);
     const [interimText, setInterimText] = useState("");
     const [isMuted, setIsMuted] = useState(false);
-    const [inputMode, setInputMode] = useState<"voice" | "text">(() => androidTextInputOnly ? "text" : "voice");
+    const [inputMode, setInputMode] = useState<"voice" | "text">(() => androidTextInputOnly ? "text" : "voice"); // 免听模式下固定 "voice"，不手动切
     const [typedText, setTypedText] = useState("");
     const [bgImageResolved, setBgImageResolved] = useState<string | null>(null);
     const [showSttWarning, setShowSttWarning] = useState(false);
-    // 免提模式：配好 STT 后默认开启"说完自动识别"；没有 STT 时该开关不可用（自动退化为按住说话）
-    const [freeTalk, setFreeTalk] = useState(true);
 
     const sttRef = useRef<STTSession | null>(null);
     const audioAbortRef = useRef<(() => void) | null>(null);
@@ -497,6 +499,10 @@ export function VoiceCallScreen({ session, character, onEnd, onClose, onConnect,
                 // 没检测到语音 → 静默重新开始监听
                 sttRef.current = null;
                 showSttCompatibilityWarning();
+            // 免听模式下 Web Speech 不可用（部分安卓浏览器不支持）→ 自动降级到按住说话，避免卡死
+            if (handsFree) {
+                setHandsFree(false);
+            }
                 if (stateRef.current === "IDLE" || stateRef.current === "USER_SPEAKING") {
                     // 短暂延迟后重启，避免快速循环
                     setTimeout(() => {
@@ -529,31 +535,34 @@ export function VoiceCallScreen({ session, character, onEnd, onClose, onConnect,
             sttRef.current = null;
             showSttCompatibilityWarning();
         }
-    }, [androidTextInputOnly, holdToTalk, runConversationTurn, session.contactId, showSttCompatibilityWarning]);
+    }, [androidTextInputOnly, holdToTalk, runConversationTurn, session.contactId, showSttCompatibilityWarning, handsFree]);
 
-    // IDLE 时自动开启监听（按住说话模式无自动监听，识别只在按住期间发生）
+    // IDLE 时自动开启监听：免听模式（handsFree）下所有设备自动持续开麦，
+    // 说完自动识别；只有"按住说话"兜底模式（holdToTalk 且未开免听）才不自动监听
     useEffect(() => {
-        if (holdToTalk) return;
+        if (holdToTalk && !handsFree) return;
         if (inputMode === "text" && sttRef.current) {
             sttRef.current.abort();
             sttRef.current = null;
             setInterimText("");
         }
-        if (!androidTextInputOnly && inputMode === "voice" && callState === "IDLE" && !isMuted && !minimized) {
-            // 短暂延迟让 UI 过渡完成
-            const timer = setTimeout(() => {
-                if (stateRef.current === "IDLE" && !minimizedRef.current) {
-                    startListening();
-                }
-            }, 500);
-            return () => clearTimeout(timer);
+        if (handsFree || (!androidTextInputOnly && !holdToTalk)) {
+            if (inputMode === "voice" && callState === "IDLE" && !isMuted && !minimized) {
+                // 短暂延迟让 UI 过渡完成
+                const timer = setTimeout(() => {
+                    if (stateRef.current === "IDLE" && !minimizedRef.current) {
+                        startListening();
+                    }
+                }, 500);
+                return () => clearTimeout(timer);
+            }
         }
         // 静音时停止监听
         if (isMuted && sttRef.current) {
             sttRef.current.abort();
             sttRef.current = null;
         }
-    }, [androidTextInputOnly, holdToTalk, callState, isMuted, inputMode, minimized, startListening]);
+    }, [androidTextInputOnly, holdToTalk, handsFree, callState, isMuted, inputMode, minimized, startListening]);
 
     const handleInputModeToggle = useCallback(() => {
         if (androidTextInputOnly) {
@@ -601,137 +610,6 @@ export function VoiceCallScreen({ session, character, onEnd, onClose, onConnect,
     }, [callState, runConversationTurn]);
 
     // 按住说话（非 iOS）：按下录音，松开转写后走对话轮
-
-    // ── 免提模式（Free-Talk）：说话不用一直按着，说完自动识别 ─────────────
-    // 机制：录音持续开着（不靠你按着按钮），用能量检测判断"停顿了多久"，
-    // 一旦停顿够长（或到 6 秒硬上限），就自动把这段录音送云端转写成文字、
-    // 触发角色回复，回复期间暂停录音避免录进角色自己的声音，说完自动接着录。
-    const freeTalkOn = freeTalk && freeTalkSupported;
-    const [freeTalkStatus, setFreeTalkStatus] = useState<"idle" | "listening" | "transcribing">("idle");
-    const freeTalkRecorderRef = useRef<{ stop: () => Promise<Blob | null>; cancel: () => void } | null>(null);
-    const freeTalkChunksRef = useRef<Blob[]>([]);
-    const freeTalkRecordingSinceRef = useRef(0);
-    const freeTalkLastVoiceAtRef = useRef(0);
-    const freeTalkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-    const freeTalkEnergyRef = useRef<ReturnType<typeof setInterval> | null>(null);
-    const freeTalkBusyRef = useRef(false);
-    const freeTalkActiveRef = useRef(false);
-
-    const stopFreeTalkWatchers = useCallback(() => {
-        if (freeTalkTimerRef.current) { clearInterval(freeTalkTimerRef.current); freeTalkTimerRef.current = null; }
-        if (freeTalkEnergyRef.current) { clearInterval(freeTalkEnergyRef.current); freeTalkEnergyRef.current = null; }
-    }, []);
-
-    const stopFreeTalkSession = useCallback(() => {
-        freeTalkActiveRef.current = false;
-        freeTalkBusyRef.current = false;
-        stopFreeTalkWatchers();
-        freeTalkRecorderRef.current?.cancel();
-        freeTalkRecorderRef.current = null;
-        freeTalkChunksRef.current = [];
-        setFreeTalkStatus("idle");
-    }, [stopFreeTalkWatchers]);
-
-    const startFreeTalkRecorderRef = useRef<() => void>(() => {});
-
-    const runFreeTalkTurn = useCallback(async (blob: Blob | null) => {
-        if (!blob || blob.size === 0) {
-            // 没有录到内容（可能是静音），直接重新开一轮，不触发回复
-            if (freeTalkActiveRef.current && !minimizedRef.current && stateRef.current !== "ENDED" && callState !== "ENDED") {
-                startFreeTalkRecorderRef.current();
-            }
-            return;
-        }
-        freeTalkBusyRef.current = true;
-        setFreeTalkStatus("transcribing");
-        try {
-            const config = resolveCloudSttConfig(session.contactId);
-            if (!config) return;
-            const transcript = await transcribeAudioBlob(blob, config);
-            if (transcript.trim() && stateRef.current !== "ENDED") {
-                runConversationTurn(transcript.trim());
-            }
-        } catch (e) {
-            console.warn("[FreeTalk] transcribe error:", e);
-        } finally {
-            freeTalkBusyRef.current = false;
-            // 角色回复结束后，如果没有挂断/切小窗，自动接着听下一句
-            if (freeTalkActiveRef.current && !minimizedRef.current && stateRef.current !== "ENDED") {
-                startFreeTalkRecorderRef.current();
-            } else {
-                setFreeTalkStatus("idle");
-            }
-        }
-    }, [session.contactId, runConversationTurn]);
-
-    // 声明顺序依赖：startFreeTalkRecorder 在 runFreeTalkTurn 之后定义，用 ref 前向引用避免 TDZ
-    const startFreeTalkRecorder = useCallback(async () => {
-        if (!freeTalkSupported || freeTalkBusyRef.current) return;
-        freeTalkActiveRef.current = true;
-        setFreeTalkStatus("listening");
-        try {
-            const recorder = await startCallRecording();
-            freeTalkRecorderRef.current = recorder;
-            freeTalkRecordingSinceRef.current = Date.now();
-            freeTalkLastVoiceAtRef.current = Date.now();
-
-            // 断句定时器：每隔 400ms 检查一次"距离最后一次开始录音有没有超过停顿阈值"
-            freeTalkTimerRef.current = setInterval(async () => {
-                if (!freeTalkActiveRef.current || freeTalkBusyRef.current) return;
-                const now = Date.now();
-                const recordingMs = now - freeTalkRecordingSinceRef.current;
-                // 最长 8 秒硬切，防止录进去没说完的长句；平时靠"角色开始说话/回复"来自然断句
-                // （真正"静音断句"要读 MediaRecorder 的实时音量，浏览器 API 没直接暴露，
-                //   这里用最稳妥的"角色一开口 / 回复一结束"作为断句点，效果等同于"你说完它就该接话了"）
-                if (recordingMs >= 8000) {
-                    freeTalkActiveRef.current = false;
-                    stopFreeTalkWatchers();
-                    const blob = await recorder.stop();
-                    freeTalkRecorderRef.current = null;
-                    void runFreeTalkTurn(blob);
-                }
-            }, 400);
-        } catch (e) {
-            console.warn("[FreeTalk] start recording failed:", e);
-            freeTalkActiveRef.current = false;
-            setFreeTalkStatus("idle");
-        }
-    }, [freeTalkSupported, stopFreeTalkWatchers, runFreeTalkTurn]);
-
-    useEffect(() => { startFreeTalkRecorderRef.current = startFreeTalkRecorder; }, [startFreeTalkRecorder]);
-
-    // 角色开始说话（AI_SPEAKING）→ 立刻掐断当前录音送去转写，避免把角色自己的声音录进去
-    useEffect(() => {
-        if (callState === "AI_SPEAKING" && freeTalkRecorderRef.current && freeTalkActiveRef.current) {
-            const recorder = freeTalkRecorderRef.current;
-            freeTalkActiveRef.current = false;
-            stopFreeTalkWatchers();
-            setFreeTalkStatus("transcribing");
-            void recorder.stop().then((blob) => {
-                freeTalkRecorderRef.current = null;
-                void runFreeTalkTurn(blob);
-            });
-        }
-    }, [callState, stopFreeTalkWatchers, runFreeTalkTurn]);
-
-    // 进入 IDLE 且开启了免提 → 开始自动监听；退出/挂断/切小窗 → 停掉
-    useEffect(() => {
-        if (freeTalkOn && callState === "IDLE" && !minimized && !isMuted) {
-            void startFreeTalkRecorder();
-        } else {
-            stopFreeTalkSession();
-        }
-        return () => stopFreeTalkSession();
-    }, [freeTalkOn, callState, minimized, isMuted, startFreeTalkRecorder, stopFreeTalkSession]);
-
-    // 免提模式开关 UI
-    const [showFreeTalkToggle, setShowFreeTalkToggle] = useState(false);
-    const toggleFreeTalk = () => {
-        const next = !freeTalkOn;
-        setFreeTalk(next);
-        if (!next) stopFreeTalkSession();
-    };
-
     const holdInput = useHoldToTalk({
         characterId: session.contactId,
         canStart: () => stateRef.current === "IDLE",
@@ -844,29 +722,6 @@ export function VoiceCallScreen({ session, character, onEnd, onClose, onConnect,
 
             <CallVolumeControl />
             <CallAutoChatControl />
-
-            {/* 免听开关：配好 STT 后可用，开启后不用一直按着麦克风，说完自动识别 */}
-            {freeTalkSupported && (
-                <button
-                    type="button"
-                    className={`ui-call-btn ${freeTalkOn ? "ui-call-btn-success" : "ui-call-btn-muted"}`}
-                    style={{ position: "absolute", top: 56, left: 16, zIndex: 20 }}
-                    aria-label={freeTalkOn ? "关闭免听模式" : "开启免听模式"}
-                    title={freeTalkOn ? "免听已开启：说话会自动识别" : "开启免听模式（说完自动识别，不用一直按着）"}
-                    onClick={toggleFreeTalk}
-                >
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                        {freeTalkOn && <line x1="4" y1="4" x2="20" y2="20" stroke="currentColor" />}
-                    </svg>
-                </button>
-            )}
-            {(freeTalkStatus === "listening" || freeTalkStatus === "transcribing") && (
-                <div style={{ position: "absolute", top: 88, left: 16, zIndex: 20, fontSize: 11, color: freeTalkStatus === "transcribing" ? "#fbbf24" : "#4ade80", opacity: 0.9 }}>
-                    {freeTalkStatus === "listening" ? "免听中，说话即可…" : "识别中…"}
-                </div>
-            )}
 
             {onMinimize && callState !== "ENDED" && (
                 <button
@@ -1011,8 +866,16 @@ export function VoiceCallScreen({ session, character, onEnd, onClose, onConnect,
                     </form>
                 )}
 
-                {/* 按住说话提示/错误行 */}
-                {holdToTalk && inputMode === "voice" && callState !== "CONNECTING" && callState !== "ENDED" && (
+                {/* 免听模式提示行 */}
+                {handsFree && !holdToTalk && inputMode === "voice" && callState !== "CONNECTING" && callState !== "ENDED" && (
+                    <div className="text-center ts-12 opacity-80 px-5">
+                        {callState === "IDLE" ? "免听中，直接说话即可，不用按麦克风"
+                            : callState === "AI_SPEAKING" ? "对方说话中…"
+                            : "…"}
+                    </div>
+                )}
+                {/* 按住说话提示/错误行（只在没开免听时） */}
+                {holdToTalk && !handsFree && inputMode === "voice" && callState !== "CONNECTING" && callState !== "ENDED" && (
                     <div className="text-center ts-12 opacity-80 px-5">
                         {holdInput.recState === "recording" ? "松开发送"
                             : holdInput.recState === "transcribing" ? "识别中…"
@@ -1044,21 +907,40 @@ export function VoiceCallScreen({ session, character, onEnd, onClose, onConnect,
                                 )}
                             </button>
 
-                            {/* 按住说话主按钮（文字模式下点按切回语音） */}
+                            {/* 免听模式主按钮：显示"正在听"，点击切换开关；按住说话模式主按钮：点击按住录音 */}
                             <button
                                 className="ui-call-mic ui-call-mic-lg"
                                 style={{ touchAction: "none" }}
                                 data-state={
-                                    inputMode === "text" ? "text"
-                                        : holdInput.recState === "recording" ? "speaking"
-                                        : callState === "IDLE" ? "idle"
-                                        : "busy"
+                                    handsFree
+                                        ? (callState === "IDLE" ? "idle" : "busy")
+                                        : (inputMode === "text" ? "text"
+                                            : holdInput.recState === "recording" ? "speaking"
+                                            : callState === "IDLE" ? "idle"
+                                            : "busy")
                                 }
-                                aria-label={inputMode === "text" ? "切换到语音输入" : "按住说话"}
-                                title={inputMode === "text" ? "切换到语音输入" : "按住说话"}
-                                {...(inputMode === "voice" ? holdInput.pressHandlers : { onClick: handleInputModeToggle })}
+                                aria-label={
+                                    handsFree
+                                        ? "免听模式：点击可关闭"
+                                        : (inputMode === "text" ? "切换到语音输入" : "按住说话")
+                                }
+                                title={
+                                    handsFree
+                                        ? "免听已开启：说话自动识别，点击关闭"
+                                        : (inputMode === "text" ? "切换到语音输入" : "按住说话")
+                                }
+                                {...(handsFree
+                                    ? { onClick: () => setHandsFree(false) }
+                                    : (inputMode === "voice" ? holdInput.pressHandlers : { onClick: handleInputModeToggle }))}
                             >
-                                {inputMode === "text" ? (
+                                {handsFree && callState === "IDLE" ? (
+                                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                                        <line x1="12" y1="19" x2="12" y2="22" />
+                                        <circle cx="12" cy="12" r="10" strokeDasharray="4 3" />
+                                    </svg>
+                                ) : inputMode === "text" ? (
                                     <span className="ui-call-input-text-icon">Aa</span>
                                 ) : (
                                     <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1068,6 +950,8 @@ export function VoiceCallScreen({ session, character, onEnd, onClose, onConnect,
                                     </svg>
                                 )}
                             </button>
+
+                            {/* 免听开关小圆点（按住说话模式下没有，免听模式下点主按钮切换） */}
 
                             {/* Hangup */}
                             <button
