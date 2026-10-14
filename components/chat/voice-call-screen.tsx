@@ -48,7 +48,8 @@ type SubtitleEntry = {
 type VoiceCallScreenProps = {
     session: ChatSession;
     character: Character;
-    onEnd: () => void;
+    onEnd?: () => void;
+    onClose?: () => void;
     onConnect?: () => void;
     initiator?: "user" | "character";
     /** 通话是否处于缩小的悬浮窗状态：暂停麦克风监听/计时/语音播放，仅显示背景+名字 */
@@ -68,7 +69,11 @@ function stripBilingualForSpeech(text: string): string {
 
 // ── Component ───────────────────────────────────────
 
-export function VoiceCallScreen({ session, character, onEnd, onConnect, initiator = "user", minimized = false, onMinimize, onRestore }: VoiceCallScreenProps) {
+export function VoiceCallScreen({ session, character, onEnd, onClose, onConnect, initiator = "user", minimized = false, onMinimize, onRestore }: VoiceCallScreenProps) {
+    const handleCloseCall = useCallback(() => {
+        if (onClose) onClose();
+        else if (onEnd) onEnd();
+    }, [onClose, onEnd]);
     // iOS 保留 Web Speech 免提 + Web Audio 播放（麦克风会话共存的老方案）；
     // 其余设备改「按住说话 + 云端转写」，播放走媒体元素（音量键可控、无静音拨键坑）。
     // 没配 OpenAI 兼容识别时回落旧行为（安卓=文字输入）。
@@ -82,39 +87,6 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const androidTextInputOnly = androidTextInputOnlyRef.current;
     const playCallAudio = iosDevice ? playAudioBlob : playAudioBlobViaMediaElement;
     const keyboardOffsetStyle = useCallKeyboardOffsetStyle();
-
-    // 消息排队补发：忙时入队，回到 IDLE 自动发
-    const replyQueue = useCallReplyQueue(callState, async (queuedText) => {
-        await runConversationTurn(queuedText);
-    });
-
-    // 自动搭话防冷场
-    useCallAutoChat({
-        enabled: true,
-        callState,
-        onAutoChat: () => {
-            if (callState === "IDLE") {
-                runConversationTurn();
-            }
-        },
-    });
-
-    // 原生系统浮窗同步桥
-    useShellCallOverlay({
-        name: character.name,
-        avatar: character.avatar || "",
-        sessionId: session.id,
-        getDurationSeconds: () => callDuration,
-        onHangup: () => handleHangup(),
-        onRestore: () => onRestore?.(),
-        onReply: (text) => {
-            if (callState === "IDLE") {
-                runConversationTurn(text);
-            } else {
-                replyQueue.enqueue(text);
-            }
-        },
-    });
     const [callState, setCallState] = useState<CallState>("CONNECTING");
     const hasConnectedRef = useRef(false);
     const [callDuration, setCallDuration] = useState(0);
@@ -675,8 +647,41 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
         messagesRef.current = [...messagesRef.current, endMsg];
 
         // Delay then close
-        setTimeout(() => onEnd(), 1500);
-    }, [session.id, callDuration, onEnd]);
+        setTimeout(() => handleCloseCall(), 1500);
+    }, [session.id, callDuration, handleCloseCall]);
+
+    // 消息排队补发：忙时入队，回到 IDLE 自动发
+    const replyQueue = useCallReplyQueue(callState, async (queuedText) => {
+        await runConversationTurn(queuedText);
+    });
+
+    // 自动搭话防冷场
+    useCallAutoChat({
+        enabled: true,
+        callState,
+        onAutoChat: () => {
+            if (callState === "IDLE") {
+                runConversationTurn();
+            }
+        },
+    });
+
+    // 原生系统浮窗同步桥
+    useShellCallOverlay({
+        name: character.name,
+        avatar: character.avatar || "",
+        sessionId: session.id,
+        getDurationSeconds: () => callDuration,
+        onHangup: () => handleHangup(),
+        onRestore: () => onRestore?.(),
+        onReply: (text) => {
+            if (callState === "IDLE") {
+                runConversationTurn(text);
+            } else {
+                replyQueue.enqueue(text);
+            }
+        },
+    });
 
     // ── Render ──────────────────────────────────────
 
@@ -1001,7 +1006,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                                         role: "user",
                                         content: `[我拒绝了语音通话]`,
                                     });
-                                    onEnd();
+                                    handleCloseCall();
                                 }}
                                 className="ui-call-btn ui-call-btn-danger"
                             >
@@ -1029,7 +1034,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                                     role: "user",
                                     content: `[我取消了语音通话]`,
                                 });
-                                onEnd();
+                                handleCloseCall();
                             }}
                             className="ui-call-btn ui-call-btn-danger"
                         >
