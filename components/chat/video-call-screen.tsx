@@ -22,6 +22,12 @@ import { CallSttWarningDialog, hideCallSttWarningPermanently, isCallSttWarningHi
 import { isAndroidBrowser, isIOSDevice } from "./voice-input-platform";
 import { CallVolumeControl } from "./call-volume-control";
 import { startIncomingCallVibration } from "@/lib/call-vibration";
+import { CallMiniWindow } from "./call-mini-window";
+import { useCallReplyQueue } from "./use-call-reply-queue";
+import { useCallAutoChat } from "./use-call-auto-chat";
+import { useShellCallOverlay } from "./use-shell-call-overlay";
+import { persistCallAudio } from "@/lib/call-audio-storage";
+import { updateMessageMediaData } from "@/lib/chat-storage";
 
 // ── Types ───────────────────────────────────────────
 
@@ -612,6 +618,39 @@ export function VideoCallScreen({ session, character, onEnd, onConnect, initiato
         setTimeout(() => onEnd(), 1500);
     }, [session.id, callDuration, onEnd, stopCameraStream]);
 
+    // 消息排队补发：忙时入队，回到 IDLE 自动发
+    const replyQueue = useCallReplyQueue(callState, async (queuedText) => {
+        await runConversationTurn(queuedText);
+    });
+
+    // 自动搭话防冷场
+    useCallAutoChat({
+        enabled: true,
+        callState,
+        onAutoChat: () => {
+            if (callState === "IDLE") {
+                runConversationTurn();
+            }
+        },
+    });
+
+    // 原生系统浮窗同步桥
+    useShellCallOverlay({
+        name: character.name,
+        avatar: character.avatar || "",
+        sessionId: session.id,
+        getDurationSeconds: () => callDuration,
+        onHangup: () => handleHangup(),
+        onRestore: () => onRestore?.(),
+        onReply: (text) => {
+            if (callState === "IDLE") {
+                runConversationTurn(text);
+            } else {
+                replyQueue.enqueue(text);
+            }
+        },
+    });
+
     // 通话音频会话 + 卸载兜底：不经挂断键退出时释放识别与在途播放，
     // 防止识别自动重启循环在后台无限自我重启、麦克风永不归还（详见 voice-call-screen）。
     useEffect(() => {
@@ -628,17 +667,14 @@ export function VideoCallScreen({ session, character, onEnd, onConnect, initiato
 
     if (minimized) {
         return (
-            <button
-                type="button"
-                className="call-mini-window"
-                style={{ backgroundImage: `url(${bgImageResolved || character.avatar || ""})` }}
-                onClick={onRestore}
-                aria-label={`返回与${character.name}的视频通话`}
-                title="点击返回通话"
-            >
-                <span className="call-mini-window-overlay" />
-                <span className="call-mini-window-name">{character.name}</span>
-            </button>
+            <CallMiniWindow
+                name={character.name}
+                avatar={bgImageResolved || character.avatar || ""}
+                callDuration={formatTime(callDuration)}
+                pendingCount={replyQueue.pendingCount}
+                onRestore={() => onRestore?.()}
+                onHangup={handleHangup}
+            />
         );
     }
 
